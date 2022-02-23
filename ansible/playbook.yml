@@ -1,0 +1,6 @@
+---
+- hosts: all
+  become: false
+  tasks:
+    - name: install ansible
+      shell: pip3 install ansible

@@ -1,0 +1,187 @@
+---
+- hosts: all
+  gather_facts: yes
+
+  vars:
+    ansible_become_pass:   "{{ lookup('env','SUDOPASS') }}"
+
+  tasks:
+    - pause:
+        prompt: "Sudo password for localhost"
+      when: ansible_become_pass|length == 0
+      register: ansible_become_pass
+      tags:
+        - always
+        
+    - name: Save our destination host
+      set_fact: dest_host="{{ ansible_host }}"
+
+    - name: Get user from local ssh config
+      local_action: shell ssh -G {{ dest_host }} | awk '/^user /{ print $2 }'
+      changed_when: false
+      register: ssh_user
+
+    - name: Print forced ansible_user if defined or username from ssh config otherwise
+      debug: msg="Ansible will connect with {{ ansible_user | default(ssh_user.stdout) }}"
+
+    - name: Set SSH User
+      set_fact:
+        ansible_ssh_user: "{{ ansible_user | default(ssh_user.stdout) }}"
+        
+    - name: Get home directory
+      shell: dirname $(pwd)
+      changed_when: false
+      register: ssh_home
+
+    - name: Set SSH User
+      set_fact:
+        ansible_ssh_home: "{{ ssh_home.stdout }}"
+        
+    - name: Print our remote name
+      debug: msg="Ansible connected with {{ ansible_ssh_user }}"
+
+    - name: Creates downloads directory
+      file:
+        path: downloads
+        state: directory
+
+
+    - name: Check remote zsh-5.8.1.tar.xz
+      stat: 
+        path: "{{ ansible_ssh_home }}/{{ ansible_ssh_user }}/downloads/zsh-5.8.1.tar.xz"
+      register: file_zsh_tar_exist
+
+    - name: Creates directory zsh-5.8.1
+      file:
+        path: zsh-5.8.1
+        state: directory
+      when: file_zsh_tar_exist.stat.exists == false
+
+    - name: download
+      get_url:
+        url: https://www.zsh.org/pub/zsh-5.8.1.tar.xz
+        dest: "{{ ansible_ssh_home }}/{{ ansible_ssh_user }}/downloads/zsh-5.8.1.tar.xz"
+      when: file_zsh_tar_exist.stat.exists == false
+
+    - name: Extract into downloads
+      unarchive:
+        remote_src: true
+        src: "{{ ansible_ssh_home }}/{{ ansible_ssh_user }}/downloads/zsh-5.8.1.tar.xz"
+        dest: "{{ ansible_ssh_home }}/{{ ansible_ssh_user }}"
+        owner: "{{ ansible_ssh_user }}"
+        group: brokall
+      when: file_zsh_tar_exist.stat.exists == false
+
+    - name: Check remote /usr/local/bin/zsh
+      stat: 
+        path: "/usr/local/bin/zsh"
+      register: file_zsh_exist
+
+    - name: make zsh-5.8.1
+      become: true
+      shell:
+        cmd: ./configure && make && make install 
+        chdir: "{{ ansible_ssh_home }}/{{ ansible_ssh_user }}/zsh-5.8.1"
+      when: file_zsh_exist.stat.exists == false
+
+    - name: Test for line
+      shell: grep -c "^/usr/local/bin/zsh" /etc/shell || true
+      register: test_grep
+
+    - name: add zsh to shell
+      become: true
+      lineinfile:
+        dest: /etc/shell
+        line: /usr/local/bin/zsh
+      when: test_grep.stdout == "0"
+
+    - name: git clone fzf
+      ansible.builtin.git:      
+        repo: 'https://github.com/junegunn/fzf.git'
+        dest: "{{ ansible_ssh_home }}/{{ ansible_ssh_user }}/.fzf"
+        depth: 1
+        update: no
+
+    - name: Check remote .ansible/roles
+      stat: 
+        path: "{{ ansible_ssh_home }}/{{ ansible_ssh_user }}/.ansible/roles/"
+      register: directory_roles_exist
+
+    - debug:
+        var=directory_roles_exist.stat.exists
+        var=directory_roles_exist.stat
+
+    - name: Creates .ansible/roles directory
+      file:
+        path: "{{ ansible_ssh_home }}/{{ ansible_ssh_user }}/.ansible/roles/"
+        state: directory
+      when: directory_roles_exist.stat.exists == false
+
+
+    - name: Check remote .ansible/roles
+      stat: 
+        path: "{{ ansible_ssh_home }}/{{ ansible_ssh_user }}/.ansible/roles/viasite-ansible.zsh/"
+      register: directory_viasite_ansible_exist
+
+    - debug:
+        var=directory_viasite_ansible_exist.stat.exists
+
+    - name: viasite-ansible
+      ansible.builtin.git:      
+        repo: 'https://github.com/viasite-ansible/ansible-role-zsh.git'
+        dest: "{{ ansible_ssh_home }}/{{ ansible_ssh_user }}/.ansible/roles/viasite-ansible.zsh"
+        depth: 1
+        update: no
+      when: directory_viasite_ansible_exist.stat.exists == false
+
+    - name: Copy tasks/configure.yml
+      ansible.builtin.copy:
+        src: ./tasks/configure.yml
+        dest: "{{ ansible_ssh_home }}/{{ ansible_ssh_user }}/.ansible/roles/viasite-ansible.zsh/tasks/configure.yml"
+
+    - name: Copy tasks/install.yml
+      ansible.builtin.copy:
+        src: ./tasks/install.yml
+        dest: "{{ ansible_ssh_home }}/{{ ansible_ssh_user }}/.ansible/roles/viasite-ansible.zsh/tasks/install.yml"
+
+
+    - name: Check remote /usr/local/bin/zsh
+      stat: 
+        path: "/usr/local/bin/zsh"
+      register: file_zsh_exist
+
+    - name: playbook install
+      shell: 
+        cmd: /usr/local/bin/ansible-playbook -i "localhost," -c local playbook.yml -e ansible_sudo_pass="{{ ansible_become_pass }}" -vvvv
+#        cmd: /usr/local/bin/ansible-playbook -i "localhost," -c local playbook.yml -vvvv
+        chdir: "{{ ansible_ssh_home }}/{{ ansible_ssh_user }}/.ansible/roles/viasite-ansible.zsh/"
+      become_user: "{{ ansible_ssh_user }}"
+      become: true
+      register: output
+      when: file_zsh_exist.stat.exists == false
+
+    - debug: var=output.stdout_lines
+
+    - name: run zsh
+      shell: 
+        cmd: /usr/local/bin/zsh -c 'zsh --version'
+      register: output
+
+    - debug: var=output.stdout_lines
+
+    - name: Test for line
+      shell: grep -c "fzf.zsh" "{{ ansible_ssh_home }}/{{ ansible_ssh_user }}/.zshrc/" || true
+      register: test_grep
+
+    - name: run fzf install
+      shell: 
+        cmd: source {{ ansible_ssh_home }}/{{ ansible_ssh_user }}/.fzf/install --all
+      register: output
+      when: test_grep.stdout == "0"
+
+    - name: add FZF_DEFAULT_OPS to .zshrc
+      lineinfile:
+        dest: "{{ ansible_ssh_home }}/{{ ansible_ssh_user }}/.zshrc/"
+        line: export FZF_DEFAULT_OPS="--extended"
+      when: test_grep.stdout == "0"
+

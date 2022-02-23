@@ -1,0 +1,17 @@
+---
+- hosts: all
+  become: true
+  tasks:
+    - name: upgrade pip
+      pip:
+        name: pip
+        executable: pip3
+        state: latest
+
+    - name: check version
+      shell: pip3 --version
+      ignore_errors: true
+      changed_when: false
+      register: pip_version
+
+    - debug: var=pip_version.stdout
